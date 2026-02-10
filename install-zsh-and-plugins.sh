@@ -4,6 +4,9 @@ set -eu
 # ---------------- CONFIG ----------------
 ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 PLUGINS_DIR="$ZSH_CUSTOM/plugins"
+ZSHRC_BACKUP="$HOME/.zshrc.pre-ohmyzsh-backup"
+RESTORE_ZSHRC=0
+DRY_RUN=0
 
 # Keep as space-separated (easier to loop + avoids blank lines)
 PLUGINS="git thefuck sudo zsh-autosuggestions zsh-completions zsh-history-substring-search fast-syntax-highlighting virtualenv"
@@ -15,9 +18,62 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 
+usage() {
+  cat <<'EOF'
+Usage: install-zsh-and-plugins.sh [OPTIONS]
+
+Options:
+  --restore-zshrc    Restore ~/.zshrc from backup/template if it is missing or broken
+  --dry-run          Print planned actions without changing the system
+  -h, --help         Show this help message
+EOF
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --restore-zshrc) RESTORE_ZSHRC=1 ;;
+      --dry-run) DRY_RUN=1 ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        say "Unknown option: $1"
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
+
+is_dry_run() { [ "$DRY_RUN" -eq 1 ]; }
+
+run_cmd() {
+  if is_dry_run; then
+    say "  [dry-run] $*"
+    return 0
+  fi
+  "$@"
+}
+
+run_uv_installer() {
+  if is_dry_run; then
+    say "  [dry-run] curl -fsSL https://astral.sh/uv/install.sh | sh"
+    return 0
+  fi
+  curl -fsSL https://astral.sh/uv/install.sh | sh
+}
+
 # portable in-place edit (GNU/BSD sed)
 sedi() {
   # usage: sedi 's/foo/bar/' file
+  if is_dry_run; then
+    say "  [dry-run] sed -i '$1' '$2'"
+    return 0
+  fi
+
   if is_macos; then
     sed -i '' "$1" "$2"
   else
@@ -28,12 +84,12 @@ sedi() {
 # -------------- Package install helpers --------------
 install_pkgs_linux() {
   if have apt; then
-    sudo apt update
-    sudo apt install -y git zsh curl python3 python3-pip
+    run_cmd sudo apt update
+    run_cmd sudo apt install -y git zsh curl python3 python3-pip
   elif have dnf; then
-    sudo dnf install -y git zsh curl python3 python3-pip
+    run_cmd sudo dnf install -y git zsh curl python3 python3-pip
   elif have pacman; then
-    sudo pacman -Sy --noconfirm git zsh curl python python-pip
+    run_cmd sudo pacman -Sy --noconfirm git zsh curl python python-pip
   else
     say "⚠️ No supported Linux package manager detected. Assuming deps exist."
   fi
@@ -42,9 +98,9 @@ install_pkgs_linux() {
 install_pkgs_macos() {
   if ! have brew; then
     say "⚠️ Homebrew not found. Install it first: https://brew.sh"
-    say "   Continuing, but thefuck/uv installs may fall back to python installer."
+    say "   Continuing without brew; uv will use the official installer."
   else
-    brew install git zsh curl python || true
+    run_cmd brew install git zsh curl python || true
   fi
 }
 
@@ -61,8 +117,12 @@ install_prereqs() {
 install_ohmyzsh() {
   say "==> Installing Oh My Zsh"
   if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    RUNZSH=no CHSH=no sh -c \
-      "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    if is_dry_run; then
+      say "  [dry-run] RUNZSH=no CHSH=no sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\""
+    else
+      RUNZSH=no CHSH=no sh -c \
+        "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    fi
   else
     say "Oh My Zsh already installed"
   fi
@@ -73,7 +133,7 @@ install_plugin() {
   name="$1"
   repo="$2"
   if [ ! -d "$PLUGINS_DIR/$name" ]; then
-    git clone --depth=1 "$repo" "$PLUGINS_DIR/$name"
+    run_cmd git clone --depth=1 "$repo" "$PLUGINS_DIR/$name"
   else
     say "  - $name already installed"
   fi
@@ -81,7 +141,7 @@ install_plugin() {
 
 install_plugins() {
   say "==> Installing plugins"
-  mkdir -p "$PLUGINS_DIR"
+  run_cmd mkdir -p "$PLUGINS_DIR"
 
   install_plugin zsh-autosuggestions \
     https://github.com/zsh-users/zsh-autosuggestions
@@ -96,59 +156,27 @@ install_plugins() {
     https://github.com/zdharma-continuum/fast-syntax-highlighting
 }
 
-# -------------- thefuck install --------------
-install_thefuck() {
-  say "==> Installing thefuck"
-
-  if is_macos && have brew; then
-    brew install thefuck || true
+# -------------- uv install (systemwide-ish) --------------
+resolve_uv_bin() {
+  if have uv; then
+    command -v uv
     return 0
   fi
 
-  # Linux: prefer system package if available
-  if have apt; then
-    sudo apt install -y thefuck || true
-  elif have dnf; then
-    sudo dnf install -y thefuck || true
-  elif have pacman; then
-    sudo pacman -S --noconfirm thefuck || true
+  if [ -x "$HOME/.local/bin/uv" ]; then
+    printf "%s\n" "$HOME/.local/bin/uv"
+    return 0
   fi
 
-  # If still not found, install via pipx (best) or pip (fallback)
-  if ! have thefuck; then
-    if have pipx; then
-      pipx install thefuck || pipx upgrade thefuck
-    else
-      # try to ensure pipx exists
-      if have python3; then
-        python3 -m pip install --user -U pip pipx >/dev/null 2>&1 || true
-        if [ -x "$HOME/.local/bin/pipx" ]; then
-          "$HOME/.local/bin/pipx" ensurepath >/dev/null 2>&1 || true
-          "$HOME/.local/bin/pipx" install thefuck || "$HOME/.local/bin/pipx" upgrade thefuck
-        else
-          # fallback: pip --user (less ideal but works)
-          python3 -m pip install --user -U thefuck
-        fi
-      else
-        say "⚠️ python3 not found; cannot install thefuck via pip."
-      fi
-    fi
-  fi
-
-  if have thefuck; then
-    say "  - thefuck installed: $(command -v thefuck)"
-  else
-    say "⚠️ thefuck could not be installed automatically."
-  fi
+  return 1
 }
 
-# -------------- uv install (systemwide-ish) --------------
 install_uv() {
   say "==> Installing uv"
 
   # Prefer package managers when present
   if is_macos && have brew; then
-    brew install uv || true
+    run_cmd brew install uv || true
   elif have apt; then
     # uv may not be in default repos; use official installer if not present
     :
@@ -158,73 +186,201 @@ install_uv() {
     :
   fi
 
-  if have uv; then
-    say "  - uv installed: $(command -v uv)"
+  UV_BIN="$(resolve_uv_bin || true)"
+  if [ -n "$UV_BIN" ]; then
+    say "  - uv installed: $UV_BIN"
     return 0
   fi
 
   # Official installer (installs to ~/.local/bin by default)
-  curl -fsSL https://astral.sh/uv/install.sh | sh
+  run_uv_installer
 
-  if have uv; then
-    say "  - uv installed: $(command -v uv)"
+  if is_dry_run; then
+    say "  - dry-run: skipped post-install uv path checks"
+    return 0
+  fi
+
+  UV_BIN="$(resolve_uv_bin || true)"
+  if [ -n "$UV_BIN" ]; then
+    say "  - uv installed: $UV_BIN"
   else
     say "⚠️ uv installed but may not be on PATH yet (usually ~/.local/bin)."
   fi
 }
 
-# -------------- .zshrc update --------------
-update_zshrc() {
-  say "==> Updating ~/.zshrc plugin list"
-  ZSHRC="$HOME/.zshrc"
+# -------------- thefuck install (via uv) --------------
+install_thefuck() {
+  say "==> Installing thefuck with uv"
 
-  # Ensure file exists
-  [ -f "$ZSHRC" ] || touch "$ZSHRC"
-
-  # Backup once
-  [ -f "$ZSHRC.pre-ohmyzsh-backup" ] || cp "$ZSHRC" "$ZSHRC.pre-ohmyzsh-backup"
-
-  # Remove any existing plugins=(...) block (handles multi-line blocks)
-  # This deletes from a line starting with plugins=( up to the next ')'
-  # Works on both GNU/BSD sed.
-  if grep -q "^plugins=(" "$ZSHRC"; then
-    # Use sed range delete
-    sedi '/^plugins=(/,/^[[:space:]]*)[[:space:]]*$/d' "$ZSHRC"
+  UV_BIN="$(resolve_uv_bin || true)"
+  if [ -z "$UV_BIN" ]; then
+    if is_dry_run; then
+      UV_BIN="$HOME/.local/bin/uv"
+      say "  - dry-run: uv not found in current PATH; assuming $UV_BIN after installation"
+    else
+      say "⚠️ uv not found; skipping thefuck install."
+      return 0
+    fi
   fi
 
-  # Append clean plugins block (no blank lines)
-  {
-    echo ""
-    echo "plugins=(${PLUGINS})"
-  } >> "$ZSHRC"
+  if run_cmd "$UV_BIN" tool install thefuck; then
+    :
+  elif run_cmd "$UV_BIN" tool upgrade thefuck; then
+    :
+  else
+    say "⚠️ thefuck could not be installed or upgraded with uv."
+    return 0
+  fi
 
-  # Enable zsh-completions safely (no duplicates)
-  if ! grep -q "plugins/zsh-completions/src" "$ZSHRC"; then
-    cat >> "$ZSHRC" <<'EOF'
+  if is_dry_run; then
+    say "  - dry-run: skipped post-install thefuck path checks"
+    return 0
+  fi
+
+  if have thefuck; then
+    say "  - thefuck installed: $(command -v thefuck)"
+  elif [ -x "$HOME/.local/bin/thefuck" ]; then
+    say "  - thefuck installed: $HOME/.local/bin/thefuck"
+  else
+    say "⚠️ thefuck installed but may not be on PATH yet (usually ~/.local/bin)."
+  fi
+}
+
+# -------------- .zshrc restore/update --------------
+is_zshrc_broken_or_missing() {
+  file="$1"
+  [ ! -f "$file" ] && return 0
+  [ ! -s "$file" ] && return 0
+  grep -q "oh-my-zsh.sh" "$file" || return 0
+  return 1
+}
+
+restore_zshrc_if_requested() {
+  [ "$RESTORE_ZSHRC" -eq 1 ] || return 0
+
+  ZSHRC="$HOME/.zshrc"
+  TEMPLATE="$HOME/.oh-my-zsh/templates/zshrc.zsh-template"
+
+  if is_zshrc_broken_or_missing "$ZSHRC"; then
+    say "==> Restoring ~/.zshrc (--restore-zshrc enabled)"
+    if [ -f "$ZSHRC_BACKUP" ] && [ -s "$ZSHRC_BACKUP" ]; then
+      run_cmd cp "$ZSHRC_BACKUP" "$ZSHRC"
+      say "  - restored from $ZSHRC_BACKUP"
+    elif [ -f "$TEMPLATE" ]; then
+      run_cmd cp "$TEMPLATE" "$ZSHRC"
+      say "  - restored from $TEMPLATE"
+    else
+      run_cmd touch "$ZSHRC"
+      say "  - no backup/template found; created empty ~/.zshrc"
+    fi
+  else
+    say "==> ~/.zshrc looks healthy; restore skipped"
+  fi
+}
+
+write_managed_zsh_block() {
+  cat <<EOF
+# >>> codex-zsh-managed >>>
+# Managed by install-zsh-and-plugins.sh. Do not edit inside this block.
+plugins=($PLUGINS)
+
+# Adds a directory to PATH only once.
+add_to_path() {
+  [ -n "\$1" ] || return 0
+  case ":\$PATH:" in
+    *":\$1:"*) ;;
+    *) export PATH="\$1:\$PATH" ;;
+  esac
+}
+
+add_to_path "\$HOME/.local/bin"
 
 # zsh-completions
-fpath+=${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-completions/src
+fpath+=\${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-completions/src
 autoload -Uz compinit && compinit
-EOF
-  fi
-
-  # Add thefuck alias hook if installed (no duplicates)
-  if have thefuck && ! grep -q "thefuck --alias" "$ZSHRC"; then
-    cat >> "$ZSHRC" <<'EOF'
 
 # thefuck
-eval "$(thefuck --alias)"
+if command -v thefuck >/dev/null 2>&1; then
+  eval "\$(thefuck --alias)"
+fi
+# <<< codex-zsh-managed <<<
 EOF
+}
+
+insert_managed_block() {
+  zshrc="$1"
+
+  if is_dry_run; then
+    say "  [dry-run] insert managed zsh block into $zshrc"
+    return 0
   fi
 
-  # Ensure ~/.local/bin is on PATH for uv/pipx installs (no duplicates)
-  if ! grep -q 'HOME/.local/bin' "$ZSHRC"; then
-    cat >> "$ZSHRC" <<'EOF'
+  tmp_file="$(mktemp)"
+  block="$(write_managed_zsh_block)"
 
-# user local bin (uv/pipx)
-export PATH="$HOME/.local/bin:$PATH"
-EOF
+  awk -v block="$block" '
+    BEGIN { inserted = 0 }
+    /^[[:space:]]*source[[:space:]].*oh-my-zsh\.sh/ && inserted == 0 {
+      print block
+      print ""
+      inserted = 1
+    }
+    { print }
+    END {
+      if (inserted == 0) {
+        if (NR > 0) {
+          print ""
+        }
+        print block
+      }
+    }
+  ' "$zshrc" > "$tmp_file"
+
+  mv "$tmp_file" "$zshrc"
+}
+
+cleanup_legacy_zshrc_entries() {
+  zshrc="$1"
+  [ -f "$zshrc" ] || return 0
+
+  if grep -q "^# zsh-completions$" "$zshrc"; then
+    sedi '/^# zsh-completions$/,/^autoload -Uz compinit && compinit$/d' "$zshrc"
   fi
+
+  if grep -q "^# thefuck$" "$zshrc"; then
+    sedi '/^# thefuck$/,/^eval "\$(thefuck --alias)"$/d' "$zshrc"
+  fi
+
+  if grep -q "^# user local bin (uv\/pipx)$" "$zshrc"; then
+    sedi '/^# user local bin (uv\/pipx)$/,/^export PATH="\$HOME\/\.local\/bin:\$PATH"$/d' "$zshrc"
+  fi
+}
+
+update_zshrc() {
+  say "==> Updating ~/.zshrc"
+  ZSHRC="$HOME/.zshrc"
+  TEMPLATE="$HOME/.oh-my-zsh/templates/zshrc.zsh-template"
+
+  # Ensure file exists, prefer Oh My Zsh template when available
+  if [ ! -f "$ZSHRC" ]; then
+    if [ -f "$TEMPLATE" ]; then
+      run_cmd cp "$TEMPLATE" "$ZSHRC"
+    else
+      run_cmd touch "$ZSHRC"
+    fi
+  fi
+
+  # Backup once
+  [ -f "$ZSHRC_BACKUP" ] || run_cmd cp "$ZSHRC" "$ZSHRC_BACKUP"
+
+  cleanup_legacy_zshrc_entries "$ZSHRC"
+
+  # Remove previously managed block, then insert fresh block once.
+  if [ -f "$ZSHRC" ] && grep -q "^# >>> codex-zsh-managed >>>$" "$ZSHRC"; then
+    sedi '/^# >>> codex-zsh-managed >>>$/,/^# <<< codex-zsh-managed <<<$/d' "$ZSHRC"
+  fi
+
+  insert_managed_block "$ZSHRC"
 }
 
 # -------------- Default shell --------------
@@ -232,17 +388,24 @@ set_default_shell() {
   say "==> Setting Zsh as default shell"
   ZSH_BIN="$(command -v zsh || true)"
   if [ -n "$ZSH_BIN" ] && [ "${SHELL:-}" != "$ZSH_BIN" ]; then
-    chsh -s "$ZSH_BIN" || say "⚠️ Could not change default shell automatically"
+    run_cmd chsh -s "$ZSH_BIN" || say "⚠️ Could not change default shell automatically"
   fi
 }
 
 main() {
+  parse_args "$@"
+
+  if is_dry_run; then
+    say "==> Dry-run mode enabled (no changes will be made)"
+  fi
+
   say "==> Detecting OS: $(uname -s)"
   install_prereqs
   install_ohmyzsh
+  restore_zshrc_if_requested
   install_plugins
-  install_thefuck
   install_uv
+  install_thefuck
   update_zshrc
   set_default_shell
 
