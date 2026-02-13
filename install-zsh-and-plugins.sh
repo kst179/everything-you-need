@@ -208,9 +208,10 @@ install_uv() {
   fi
 }
 
-# -------------- thefuck install (via uv) --------------
+# -------------- thefuck install (via uv + Python 3.11) --------------
 install_thefuck() {
-  say "==> Installing thefuck with uv"
+  THEFUCK_PYTHON="${THEFUCK_PYTHON:-3.11}"
+  say "==> Installing thefuck with uv (Python $THEFUCK_PYTHON)"
 
   UV_BIN="$(resolve_uv_bin || true)"
   if [ -z "$UV_BIN" ]; then
@@ -223,12 +224,8 @@ install_thefuck() {
     fi
   fi
 
-  if run_cmd "$UV_BIN" tool install thefuck; then
-    :
-  elif run_cmd "$UV_BIN" tool upgrade thefuck; then
-    :
-  else
-    say "⚠️ thefuck could not be installed or upgraded with uv."
+  if ! run_cmd "$UV_BIN" tool install --python "$THEFUCK_PYTHON" --force thefuck; then
+    say "⚠️ thefuck could not be installed with uv using Python $THEFUCK_PYTHON."
     return 0
   fi
 
