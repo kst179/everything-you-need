@@ -85,11 +85,11 @@ sedi() {
 install_pkgs_linux() {
   if have apt; then
     run_cmd sudo apt update
-    run_cmd sudo apt install -y git zsh curl python3 python3-pip
+    run_cmd sudo apt install -y git zsh curl python3 python3-pip npm
   elif have dnf; then
-    run_cmd sudo dnf install -y git zsh curl python3 python3-pip
+    run_cmd sudo dnf install -y git zsh curl python3 python3-pip npm
   elif have pacman; then
-    run_cmd sudo pacman -Sy --noconfirm git zsh curl python python-pip
+    run_cmd sudo pacman -Sy --noconfirm git zsh curl python python-pip npm
   else
     say "⚠️ No supported Linux package manager detected. Assuming deps exist."
   fi
@@ -100,7 +100,7 @@ install_pkgs_macos() {
     say "⚠️ Homebrew not found. Install it first: https://brew.sh"
     say "   Continuing without brew; uv will use the official installer."
   else
-    run_cmd brew install git zsh curl python || true
+    run_cmd brew install git zsh curl python node || true
   fi
 }
 
@@ -240,6 +240,32 @@ install_thefuck() {
     say "  - thefuck installed: $HOME/.local/bin/thefuck"
   else
     say "⚠️ thefuck installed but may not be on PATH yet (usually ~/.local/bin)."
+  fi
+}
+
+# -------------- Codex CLI install (via npm) --------------
+install_codex() {
+  say "==> Installing Codex CLI with npm"
+
+  if ! have npm; then
+    say "⚠️ npm not found; skipping Codex CLI install."
+    return 0
+  fi
+
+  if ! run_cmd npm install -g @openai/codex; then
+    say "⚠️ Codex CLI installation failed."
+    return 0
+  fi
+
+  if is_dry_run; then
+    say "  - dry-run: skipped post-install codex path checks"
+    return 0
+  fi
+
+  if have codex; then
+    say "  - codex installed: $(command -v codex)"
+  else
+    say "⚠️ Codex CLI installed but may not be on PATH yet."
   fi
 }
 
@@ -403,6 +429,7 @@ main() {
   install_plugins
   install_uv
   install_thefuck
+  install_codex
   update_zshrc
   set_default_shell
 
