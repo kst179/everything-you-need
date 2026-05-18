@@ -3,6 +3,7 @@ set -eu
 
 # ---------------- CONFIG ----------------
 ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+LOCALE_TO_SET=""   # set by setup_locale(), consumed by write_managed_zsh_block()
 PLUGINS_DIR="$ZSH_CUSTOM/plugins"
 ZSHRC_BACKUP="$HOME/.zshrc.pre-ohmyzsh-backup"
 RESTORE_ZSHRC=0
@@ -307,6 +308,10 @@ write_managed_zsh_block() {
 # Managed by install-zsh-and-plugins.sh. Do not edit inside this block.
 plugins=($PLUGINS)
 
+# Locale / UTF-8 — ensures non-ASCII characters work in the terminal
+export LANG="$LOCALE_TO_SET"
+export LC_ALL="$LOCALE_TO_SET"
+
 # Adds a directory to PATH only once.
 add_to_path() {
   [ -n "\$1" ] || return 0
@@ -406,6 +411,40 @@ update_zshrc() {
   insert_managed_block "$ZSHRC"
 }
 
+# -------------- Locale setup --------------
+setup_locale() {
+  say "==> Configuring locale"
+
+  current_lang="${LANG:-}"
+  if [ -n "$current_lang" ]; then
+    say "  - LANG is already '$current_lang'; preserving in .zshrc"
+    LOCALE_TO_SET="$current_lang"
+    return 0
+  fi
+
+  LOCALE_TO_SET="en_US.UTF-8"
+  say "  - LANG not set; will configure $LOCALE_TO_SET"
+
+  if is_macos; then
+    return 0  # macOS always has the locale available
+  fi
+
+  # Linux: generate the locale if it is not yet present
+  if have locale && locale -a 2>/dev/null | grep -qiE "^en_US\.utf-?8$"; then
+    say "  - locale $LOCALE_TO_SET already generated"
+    return 0
+  fi
+
+  if have locale-gen; then
+    run_cmd sudo locale-gen en_US.UTF-8 || say "  ⚠️ locale-gen failed; locale may not work correctly"
+  elif have localedef; then
+    run_cmd sudo localedef -i en_US -f UTF-8 en_US.UTF-8 2>/dev/null || \
+      say "  ⚠️ localedef failed; locale may not work correctly"
+  else
+    say "  ⚠️ Cannot generate locale (no locale-gen/localedef); ensure en_US.UTF-8 is available"
+  fi
+}
+
 # -------------- Default shell --------------
 set_default_shell() {
   say "==> Setting Zsh as default shell"
@@ -430,6 +469,7 @@ main() {
   install_uv
   install_thefuck
   install_codex
+  setup_locale
   update_zshrc
   set_default_shell
 
